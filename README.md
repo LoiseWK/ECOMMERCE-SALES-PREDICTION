@@ -1,8 +1,8 @@
-#                 ECOMMERCE-SALES-PREDICTION
+# ECOMMERCE-SALES-PREDICTION
 
 ![alt text](1_b4_2bCCwcmLtu-3tWN50IQ.jpg)
 
- Live App → https://share.streamlit.io/your-username/ecommerce-sales-predictor/main
+ Live App → http://10.254.0.91:8501
 
 ## 1. Business Understanding
 Accurately forecast daily unit-sales for the next 90 days so that product managers and supply-chain teams can:
