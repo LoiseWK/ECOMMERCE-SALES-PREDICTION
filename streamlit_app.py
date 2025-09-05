@@ -1,45 +1,45 @@
 import streamlit as st
 import pandas as pd
-import pickle
 import joblib
 import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import numpy as np
+import plotly.express as px
+import seaborn as sns
 
-# ====================== 
-# Page Configuration
-# ======================
-st.set_page_config(
-    page_title="E-commerce Sales Dashboard",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-# Custom CSS for better styling
+
+# Page setup with dark theme
+st.set_page_config(page_title="Sales Dashboard", layout="wide")
+
+# Dark theme CSS
 st.markdown("""
 <style>
     .stApp {
-        background-color: #0e1117;
+        background-color: #1e1e1e;
         color: #ffffff;
     }
     
-    .stAlert > div {
-        background-color: #1e2329 !important;
-        border: 1px solid #404040 !important;
+    .stMarkdown, .stText {
         color: #ffffff !important;
     }
     
-    .stSidebar .stAlert > div {
-        background-color: #262626 !important;
-        border: 1px solid #404040 !important;
-        color: #ffffff !important;
+    .stMetric {
+        background-color: #2d2d2d;
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px solid #404040;
     }
     
-    .stMarkdown, .stText, p, div {
-        color: #ffffff !important;
+    .stMetric .metric-container {
+        background-color: #2d2d2d;
+    }
+    
+    .stDataFrame {
+        background-color: #2d2d2d;
+    }
+    
+    .stSelectbox, .stSlider, .stButton {
+        background-color: #2d2d2d;
+        color: #ffffff;
     }
     
     h1, h2, h3, h4, h5, h6 {
@@ -50,26 +50,26 @@ st.markdown("""
         background-color: #262626;
     }
     
-    .stMetric {
-        background-color: #1e2329;
-        padding: 1rem;
-        border-radius: 8px;
-        border: 1px solid #404040;
+    .stSidebar .stMarkdown {
+        color: #ffffff !important;
+    }
+    
+    /* Fix info boxes */
+    .stAlert > div {
+        background-color: #2d2d2d !important;
+        border: 1px solid #404040 !important;
+        color: #ffffff !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ====================== 
-# 1. Load Model & Data 
-# ======================
+# Load data
 @st.cache_data
 def load_data():
     try:
         df = pd.read_csv("Ecommerce_Sales_Prediction_Dataset.csv")
         df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['Date'])
-        return df
+        return df.dropna(subset=['Date'])
     except FileNotFoundError:
         st.error("❌ Dataset file not found. Please ensure 'Ecommerce_Sales_Prediction_Dataset.csv' is in the correct directory.")
         st.stop()
@@ -77,20 +77,93 @@ def load_data():
 @st.cache_resource
 def load_model():
     try:
-        import joblib
         return joblib.load("best_model.pkl")
     except FileNotFoundError:
         st.error("❌ Model file not found. Please ensure 'best_model.pkl' is in the correct directory.")
         st.stop()
 
-# Load data and model
-with st.spinner("🔄 Loading data and model..."):
-    data = load_data()
-    model_pipeline = load_model()
+# Feature engineering function
+def create_features(df, category, forecast_horizon, last_date):
+    """Create feature dataframe with all required features for the model"""
+    
+    # Generate future dates
+    future_dates = pd.date_range(
+        start=last_date + pd.Timedelta(days=1), 
+        periods=forecast_horizon
+    )
+    
+    # Get recent data for the category
+    recent_data = df[df['Product_Category'] == category].sort_values('Date').tail(30)
+    
+    if len(recent_data) == 0:
+        return None
+    
+    # Create base dataframe
+    feature_df = pd.DataFrame({
+        'Date': future_dates,
+        'Product_Category': category
+    })
+    
+    # Get last known values and averages
+    last_values = recent_data.iloc[-1]
+    avg_values = recent_data.mean(numeric_only=True)
+    
+    # Price and marketing features (use defaults if not available)
+    feature_df['Price'] = last_values.get('Price', 100)
+    feature_df['Discount'] = last_values.get('Discount', 0.1)
+    feature_df['Marketing_Spend'] = last_values.get('Marketing_Spend', 1000)
+    
+    
+    most_common_segment = recent_data['Customer_Segment'].mode()
+    feature_df['Customer_Segment'] = most_common_segment.iloc[0] if len(most_common_segment) > 0 else 'Regular'
+    
+    # Create lag features
+    feature_df['lag_1'] = recent_data['Units_Sold'].iloc[-1]
+    feature_df['lag_7'] = recent_data['Units_Sold'].iloc[-7] if len(recent_data) >= 7 else recent_data['Units_Sold'].iloc[-1]
+    feature_df['lag_14'] = recent_data['Units_Sold'].iloc[-14] if len(recent_data) >= 14 else recent_data['Units_Sold'].iloc[-1]
+    
+    # Rolling statistics
+    feature_df['roll_mean_7'] = recent_data['Units_Sold'].tail(7).mean()
+    feature_df['roll_std_7'] = recent_data['Units_Sold'].tail(7).std()
+    feature_df['roll_mean_14'] = recent_data['Units_Sold'].tail(14).mean() if len(recent_data) >= 14 else feature_df['roll_mean_7'].iloc[0]
+    feature_df['roll_std_14'] = recent_data['Units_Sold'].tail(14).std() if len(recent_data) >= 14 else feature_df['roll_std_7'].iloc[0]
+    feature_df['roll_mean_30'] = recent_data['Units_Sold'].mean()
+    feature_df['roll_std_30'] = recent_data['Units_Sold'].std()
+    
+    # Exponential weighted moving averages
+    ewm_7 = recent_data['Units_Sold'].ewm(span=7).mean().iloc[-1]
+    ewm_14 = recent_data['Units_Sold'].ewm(span=14).mean().iloc[-1]
+    ewm_30 = recent_data['Units_Sold'].ewm(span=30).mean().iloc[-1]
+    
+    feature_df['ewm_mean_7'] = ewm_7
+    feature_df['ewm_mean_14'] = ewm_14
+    feature_df['ewm_mean_30'] = ewm_30
+    
+    # Date features
+    feature_df['dayofweek'] = feature_df['Date'].dt.dayofweek
+    feature_df['month'] = feature_df['Date'].dt.month
+    feature_df['Year'] = feature_df['Date'].dt.year
+    feature_df['WeekOfYear'] = feature_df['Date'].dt.isocalendar().week
+    feature_df['Quarter'] = feature_df['Date'].dt.quarter
+    feature_df['DayOfYear'] = feature_df['Date'].dt.dayofyear
+    feature_df['is_weekend'] = (feature_df['Date'].dt.dayofweek >= 5).astype(int)
+    feature_df['IsMonthEnd'] = feature_df['Date'].dt.is_month_end.astype(int)
+    feature_df['IsMonthStart'] = feature_df['Date'].dt.is_month_start.astype(int)
+    
+    # Holiday features (simplified)
+    feature_df['is_holiday'] = 0
+    feature_df['days_to_holiday'] = 30
+    
+    # Fill any remaining NaN values
+    feature_df = feature_df.fillna(method='ffill').fillna(0)
+    
+    return feature_df
 
-# ====================== 
-# 2. Header Section
-# ======================
+# Initialize
+data = load_data()
+model = load_model()
+
+# Header with bigger title
 st.markdown("""
 <div style="
     font-size: 4rem; 
@@ -109,24 +182,17 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("📦 Total Records", f"{len(data):,}")
-with col2:
-    st.metric("🏷️ Categories", len(data['Product_Category'].unique()))
-with col3:
-    st.metric("📅 Date Range", f"{(data['Date'].max() - data['Date'].min()).days} days")
-with col4:
-    st.metric("💰 Avg Daily Sales", f"{data['Units_Sold'].mean():.0f}")
+# Sidebar filters
+st.sidebar.header("Filters")
 
-# ====================== 
-# 3. Sidebar Filters 
-# ======================
-st.sidebar.markdown("## 🔎 Dashboard Filters")
-
-# Add data info in sidebar
+data['Month'] = data['Date'].dt.strftime("%B")
+data['Year'] = data['Date'].dt.year
+months = st.sidebar.multiselect("Months:", sorted(data['Month'].unique()), sorted(data['Month'].unique()))
+categories = st.sidebar.multiselect("Categories:", sorted(data['Product_Category'].unique()), sorted(data['Product_Category'].unique()))
+years = st.sidebar.multiselect("Years:", sorted(data['Year'].unique()), sorted(data['Year'].unique()))
+# Sidebar info
 st.sidebar.markdown("### 📊 Dataset Info")
-st.sidebar.markdown(f"""
+st.sidebar.markdown(f""" 
 <div style="background-color: #262626; padding: 1rem; border-radius: 8px; border: 1px solid #404040; color: #ffffff;">
 <strong>Date Range:</strong> {data['Date'].min().strftime('%Y-%m-%d')} to {data['Date'].max().strftime('%Y-%m-%d')}<br>
 <strong>Total Sales:</strong> {data['Units_Sold'].sum():,} units<br>
@@ -134,96 +200,65 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Month filter
-data['Month'] = data['Date'].dt.strftime("%B") 
-data['Year'] = data['Date'].dt.year
-
-month_filter = st.sidebar.multiselect(
-    "📅 Select Month(s):", 
-    options=sorted(data['Month'].unique()),
-    default=sorted(data['Month'].unique())
-)
-
-# Category filter
-category_filter = st.sidebar.multiselect(
-    "🏷️ Select Product Category:", 
-    options=sorted(data['Product_Category'].unique()),
-    default=sorted(data['Product_Category'].unique())
-)
-
-# Year filter
-year_filter = st.sidebar.multiselect(
-    "📆 Select Year(s):",
-    options=sorted(data['Year'].unique()),
-    default=sorted(data['Year'].unique())
-)
-
-# Apply filters
+# Filter data
 filtered_data = data[
-    (data['Month'].isin(month_filter)) & 
-    (data['Product_Category'].isin(category_filter)) &
-    (data['Year'].isin(year_filter))
+    (data['Month'].isin(months)) & 
+    (data['Product_Category'].isin(categories)) & 
+    (data['Year'].isin(years))
 ]
 
-# ====================== 
-# 4. Data Overview 
-# ======================
-st.markdown("## 📋 Filtered Data Overview")
-
+# Check if filtered data is empty
 if len(filtered_data) == 0:
     st.warning("⚠️ No data matches the current filters. Please adjust your selection.")
     st.stop()
 
-col1, col2 = st.columns([2, 1])
-
+# Main dashboard metrics
+col1, col2, col3 = st.columns(3)
 with col1:
-    st.markdown("### Sample Data")
-    st.dataframe(
-        filtered_data.head(10).style.format({'Units_Sold': '{:,.0f}'}),
-        use_container_width=True
-    )
-
+    st.metric("Total Records", f"{len(filtered_data):,}")
 with col2:
-    st.markdown("### Quick Stats")
-    st.markdown(f"""
-    <div class="metric-container">
-        <strong>📊 Filtered Records:</strong> {len(filtered_data):,}<br>
-        <strong>💰 Total Units Sold:</strong> {filtered_data['Units_Sold'].sum():,}<br>
-        <strong>📈 Average Sales:</strong> {filtered_data['Units_Sold'].mean():.0f}<br>
-        <strong>🔝 Peak Sales:</strong> {filtered_data['Units_Sold'].max():,}<br>
-        <strong>📉 Min Sales:</strong> {filtered_data['Units_Sold'].min():,}
-    </div>
-    """, unsafe_allow_html=True)
+    st.metric("Total Sales", f"{filtered_data['Units_Sold'].sum():,}")
+with col3:
+    st.metric("Avg Daily Sales", f"{filtered_data['Units_Sold'].mean():.0f}")
 
-# ====================== 
-# 5. Visualization Section 
-# ======================
-st.markdown("## 📊 Sales Analytics")
+# Data preview
+st.subheader("Data Preview")
+st.dataframe(filtered_data.head(10))
+
+# Visualization Section
+
 
 # Create tabs for different views
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Time Series", "📊 Category Analysis", "🗓️ Seasonal Patterns", "🎯 Forecast"])
 
-with tab1:
-    st.markdown("### Sales Trend Over Time")
-    
-    # Interactive Plotly chart
-    fig = px.line(
-        filtered_data, 
-        x='Date', 
-        y='Units_Sold', 
-        color='Product_Category',
-        title="Sales Trend by Product Category",
-        hover_data=['Month']
-    )
-    fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Units Sold",
-        hovermode='x unified',
-        height=500
-    )
-    st.plotly_chart(fig, use_container_width=True)
+st.markdown("## 📊 Sales Analytics")
 
+# Time Series Analysis
+with tab1:
+# Sales trend chart
+     
+     st.subheader("Sales Trend")
+     fig, ax = plt.subplots(figsize=(10, 6), facecolor='#1e1e1e')
+     ax.set_facecolor('#2d2d2d')
+
+     for cat in filtered_data['Product_Category'].unique():
+        subset = filtered_data[filtered_data['Product_Category'] == cat]
+        ax.plot(subset['Date'], subset['Units_Sold'], label=cat, marker='o', linewidth=2)
+
+     ax.set_xlabel("Date", color='white')
+     ax.set_ylabel("Units Sold", color='white')
+     ax.tick_params(colors='white')
+     ax.legend(facecolor='#2d2d2d', edgecolor='white', labelcolor='white')
+     ax.grid(True, alpha=0.3, color='white')
+     ax.spines['bottom'].set_color('white')
+     ax.spines['top'].set_color('white')
+     ax.spines['right'].set_color('white')
+     ax.spines['left'].set_color('white')
+     st.pyplot(fig)
+
+# Category Analysis
 with tab2:
+    st.subheader("Category Analysis")
     col1, col2 = st.columns(2)
     
     with col1:
@@ -252,10 +287,8 @@ with tab2:
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
 
+# Seasonal Patterns
 with tab3:
-    st.markdown("### Seasonal Sales Patterns")
-    
-    # Monthly aggregation
     monthly_data = filtered_data.groupby(['Month', 'Product_Category'])['Units_Sold'].sum().reset_index()
     
     # Heatmap
@@ -266,195 +299,134 @@ with tab3:
     ax.set_title('Sales Heatmap: Category vs Month')
     st.pyplot(fig)
 
+# Forecasting section
 with tab4:
-    st.markdown('<div class="forecast-highlight">', unsafe_allow_html=True)
-    st.markdown("## 🔮 Sales Forecasting")
-    st.markdown("Generate predictions for future sales based on historical data.")
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Forecast parameters
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        forecast_category = st.selectbox(
-            "🏷️ Select Product Category", 
-            options=sorted(data['Product_Category'].unique()),
-            help="Choose the product category for forecasting"
-        )
-    
-    with col2:
-        forecast_horizon = st.slider(
-            "📅 Forecast Horizon (days)", 
-            min_value=1, 
-            max_value=90, 
-            value=14,
-            help="Number of days to forecast into the future"
-        )
-    
-    with col3:
-        confidence_level = st.selectbox(
-            "📊 Confidence Level",
-            options=[80, 90, 95],
-            index=1,
-            help="Statistical confidence level for predictions"
-        )
-    
-    # Generate forecast button
-    if st.button("🚀 Generate Forecast", type="primary", use_container_width=True):
-        with st.spinner(f"🔄 Generating {forecast_horizon}-day forecast for {forecast_category}..."):
-            try:
-                # Generate future dates
-                last_date = data['Date'].max()
-                future_dates = pd.date_range(
-                    start=last_date + pd.Timedelta(days=1), 
-                    periods=forecast_horizon
-                )
-                
-                # Build input DataFrame for prediction
-                # Get recent data for the selected category to base predictions on
-                recent_data = filtered_data[filtered_data['Product_Category'] == forecast_category].tail(30)
+    st.subheader("🔮 Sales Forecast")
 
-                if len(recent_data) == 0:
-                         st.error("No historical data found for this category")
-                else:
-                # Simple forecasting using historical average (since model needs complex features)
-                         avg_sales = recent_data['Units_Sold'].mean()
-                         std_sales = recent_data['Units_Sold'].std() if len(recent_data) > 1 else avg_sales * 0.1
-    
-                # Generate predictions with some trend and seasonality
-                np.random.seed(42)
-                trend = np.linspace(0, len(recent_data) * 0.01, forecast_horizon)  # Slight upward trend
-                seasonal = np.sin(np.arange(forecast_horizon) * 2 * np.pi / 7) * (std_sales * 0.2)  # Weekly pattern
-                noise = np.random.normal(0, std_sales * 0.1, forecast_horizon)
-    
-                y_pred = avg_sales + trend + seasonal + noise
-                y_pred = np.abs(y_pred)  # Ensure positive values
-                future_df = pd.DataFrame({
-                    "Date": future_dates,
-                    "Product_Category": forecast_category
-                })
+    col1, col2 = st.columns(2)
+    with col1:
+       forecast_category = st.selectbox("Category:", sorted(data['Product_Category'].unique()))
+    with col2:
+       forecast_days = st.slider("Forecast Days:", 1, 30, 7)
+
+    if st.button("Generate Forecast", type="primary"):
+       with st.spinner(f"Generating {forecast_days}-day forecast..."):
+        try:
+            # Get last date
+            last_date = data['Date'].max()
+            
+            # Create feature dataframe
+            future_df = create_features(data, forecast_category, forecast_days, last_date)
+            
+            if future_df is None:
+                st.error("❌ No historical data found for this category.")
+            else:
+                # Try model prediction first
+                try:
+                    predictions = model.predict(future_df)
+                    st.success("✅ Model predictions generated!")
+                    prediction_method = "Machine Learning Model"
+                    
+                except Exception as model_error:
+                    st.warning(f"⚠️ Model failed: {str(model_error)[:100]}...")
+                    st.info("🔄 Using statistical forecasting instead...")
+                    
+                    # Fallback to statistical method
+                    recent_data = filtered_data[filtered_data['Product_Category'] == forecast_category].tail(20)
+                    if len(recent_data) > 0:
+                        avg_sales = recent_data['Units_Sold'].mean()
+                        std_sales = recent_data['Units_Sold'].std()
+                        
+                        np.random.seed(42)
+                        trend = np.linspace(0, avg_sales * 0.02, forecast_days)
+                        seasonal = np.sin(np.arange(forecast_days) * 2 * np.pi / 7) * (std_sales * 0.1)
+                        noise = np.random.normal(0, std_sales * 0.05, forecast_days)
+                        
+                        predictions = avg_sales + trend + seasonal + noise
+                        predictions = np.abs(predictions)
+                        prediction_method = "Statistical Forecasting"
+                    else:
+                        st.error("No historical data available for statistical forecasting.")
+                        st.stop()
                 
-                # Predict
-                y_pred = model_pipeline.predict(future_df)
-                future_df["Predicted_Units_Sold"] = y_pred
+                # Add predictions to dataframe
+                future_df["Predicted_Sales"] = predictions
                 
-                # Add confidence intervals (simplified simulation)
-                np.random.seed(42)
-                std_dev = filtered_data[filtered_data['Product_Category'] == forecast_category]['Units_Sold'].std()
-                error_margin = std_dev * (confidence_level/100) * 0.2
+                # Show results
+                st.success(f"✅ Forecast generated using: **{prediction_method}**")
                 
-                future_df["Lower_Bound"] = y_pred - error_margin
-                future_df["Upper_Bound"] = y_pred + error_margin
-                future_df["Lower_Bound"] = future_df["Lower_Bound"].clip(lower=0)  # Ensure non-negative
-                
-                # Display results
-                st.success(f"✅ Forecast generated successfully for {forecast_category}!")
-                
-                # Forecast summary metrics
-                col1, col2, col3, col4 = st.columns(4)
+                # Forecast metrics
+                col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("🎯 Predicted Avg", f"{y_pred.mean():.0f}")
+                    st.metric("Avg Predicted", f"{predictions.mean():.0f}")
                 with col2:
-                    st.metric("📈 Predicted Max", f"{y_pred.max():.0f}")
+                    st.metric("Max Predicted", f"{predictions.max():.0f}")
                 with col3:
-                    st.metric("📉 Predicted Min", f"{y_pred.min():.0f}")
-                with col4:
-                    st.metric("📊 Total Predicted", f"{y_pred.sum():.0f}")
+                    st.metric("Total Predicted", f"{predictions.sum():.0f}")
                 
-                # Detailed forecast table
-                st.markdown("### 📋 Detailed Forecast")
-                forecast_display = future_df.copy()
-                forecast_display['Date'] = forecast_display['Date'].dt.strftime('%Y-%m-%d')
-                forecast_display = forecast_display.round(0)
+                # Forecast table
+                st.subheader("Forecast Details")
+                display_df = future_df[['Date', 'Predicted_Sales']].copy()
+                display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d')
+                display_df['Predicted_Sales'] = display_df['Predicted_Sales'].round(0)
+                st.dataframe(display_df)
                 
-                st.dataframe(
-                    forecast_display.style.format({
-                        'Predicted_Units_Sold': '{:.0f}',
-                        'Lower_Bound': '{:.0f}',
-                        'Upper_Bound': '{:.0f}'
-                    }),
-                    use_container_width=True
-                )
+                # Forecast visualization
+                st.subheader("Forecast Chart")
                 
-                # Interactive forecast visualization
-                st.markdown("### 📈 Forecast Visualization")
+                # Get recent historical data for context
+                historical = data[data['Product_Category'] == forecast_category].tail(20)
                 
-                # Get historical data for context
-                historical = filtered_data[
-                    filtered_data['Product_Category'] == forecast_category
-                ].sort_values('Date').tail(30)  # Last 30 days for context
+                fig, ax = plt.subplots(figsize=(12, 6), facecolor='#1e1e1e')
+                ax.set_facecolor('#2d2d2d')
                 
-                # Create interactive plot
-                fig = go.Figure()
+                # Plot historical
+                if len(historical) > 0:
+                    ax.plot(historical['Date'], historical['Units_Sold'], 
+                            'o-', label='Historical', color='#00d4aa', linewidth=2, markersize=6)
                 
-                # Historical data
-                fig.add_trace(go.Scatter(
-                    x=historical['Date'],
-                    y=historical['Units_Sold'],
-                    mode='lines+markers',
-                    name='Historical Sales',
-                    line=dict(color='#1f77b4', width=2),
-                    marker=dict(size=4)
-                ))
+                # Plot forecast
+                ax.plot(future_df['Date'], future_df['Predicted_Sales'], 
+                        'o-', label='Forecast', color='#ff6b6b', linewidth=2, markersize=6)
                 
-                # Forecast data
-                fig.add_trace(go.Scatter(
-                    x=future_df['Date'],
-                    y=future_df['Predicted_Units_Sold'],
-                    mode='lines+markers',
-                    name='Predicted Sales',
-                    line=dict(color='#ff7f0e', width=2),
-                    marker=dict(size=6, symbol='diamond')
-                ))
+                ax.axvline(x=last_date, color='#ffd93d', linestyle='--', alpha=0.8, linewidth=2, label='Forecast Start')
+                ax.set_xlabel("Date", color='white', fontsize=12)
+                ax.set_ylabel("Units Sold", color='white', fontsize=12)
+                ax.set_title(f"Sales Forecast: {forecast_category} ({prediction_method})", color='white', fontsize=14)
+                ax.tick_params(colors='white')
+                ax.legend(facecolor='#2d2d2d', edgecolor='white', labelcolor='white')
+                ax.grid(True, alpha=0.3, color='white')
                 
-                # Confidence intervals
-                fig.add_trace(go.Scatter(
-                    x=list(future_df['Date']) + list(future_df['Date'][::-1]),
-                    y=list(future_df['Upper_Bound']) + list(future_df['Lower_Bound'][::-1]),
-                    fill='toself',
-                    fillcolor='rgba(255,127,14,0.2)',
-                    line=dict(color='rgba(255,127,14,0)'),
-                    name=f'{confidence_level}% Confidence Interval',
-                    showlegend=True
-                ))
+                # Set spine colors
+                for spine in ax.spines.values():
+                    spine.set_color('white')
                 
-                fig.update_layout(
-                    title=f"Sales Forecast: {forecast_category} ({forecast_horizon} days ahead)",
-                    xaxis_title="Date",
-                    yaxis_title="Units Sold",
-                    hovermode='x unified',
-                    height=500,
-                    showlegend=True
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
+                plt.xticks(rotation=45, color='white')
+                plt.tight_layout()
+                st.pyplot(fig)
                 
                 # Forecast insights
-                st.markdown("### Forecast Insights")
-                
-                avg_historical = historical['Units_Sold'].mean() if len(historical) > 0 else 0
-                avg_predicted = y_pred.mean()
-                trend = "📈 increasing" if avg_predicted > avg_historical else "📉 decreasing"
-                change_pct = ((avg_predicted - avg_historical) / avg_historical * 100) if avg_historical > 0 else 0
-                
-                insights = f"""
-                **Key Insights for {forecast_category}:**
-                - The forecast shows a **{trend}** trend compared to recent historical data
-                - Predicted average daily sales: **{avg_predicted:.0f} units**
-                - Change from historical average: **{change_pct:+.1f}%**
-                - Total predicted sales over {forecast_horizon} days: **{y_pred.sum():.0f} units**
-                - Confidence level: **{confidence_level}%**
-                """
-                
-                st.info(insights)
-                
-            except Exception as e:
-                st.error(f"❌ Error generating forecast: {str(e)}")
-                st.error("Please check your model file and data format.")
+                if len(historical) > 0:
+                    historical_avg = historical['Units_Sold'].mean()
+                    predicted_avg = predictions.mean()
+                    change_pct = ((predicted_avg - historical_avg) / historical_avg * 100) if historical_avg > 0 else 0
+                    trend_direction = "📈 increasing" if change_pct > 0 else "📉 decreasing"
+                    
+                    st.subheader("💡 Forecast Insights")
+                    st.info(f"""
+                    **Key Insights for {forecast_category}:**
+                    - Forecast shows a **{trend_direction}** trend ({change_pct:+.1f}% change)
+                    - Average predicted daily sales: **{predicted_avg:.0f} units**
+                    - Total predicted sales: **{predictions.sum():.0f} units**
+                    - Prediction method: **{prediction_method}**
+                    """)
+        
+        except Exception as e:
+            st.error(f"❌ Error generating forecast: {str(e)}")
+            st.error("Please check your data and try again.")
 
-# ====================== 
+
 # Footer
-# ======================
 st.markdown("---")
 st.markdown("### 📌 Dashboard Information")
 col1, col2, col3 = st.columns(3)
@@ -464,18 +436,4 @@ with col1:
 with col2:
     st.markdown('<div style="background-color: #1e2329; padding: 1rem; border-radius: 8px; border: 1px solid #404040;"><strong style="color: #ffffff;">📊 Data Source:</strong> <span style="color: #ffffff;">E-commerce Sales Dataset</span></div>', unsafe_allow_html=True)
 with col3:
-    st.markdown(f'<div style="background-color: #1e2329; padding: 1rem; border-radius: 8px; border: 1px solid #404040;"><strong style="color: #ffffff;">⏰ Last Updated:</strong> <span style="color: #ffffff;">{datetime.now().strftime("%Y-%m-%d %H:%M")}</span></div>', unsafe_allow_html=True)
-
-# Sidebar footer
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🎛️ Dashboard Controls")
-if st.sidebar.button("🔄 Refresh Data", help="Reload the dashboard data"):
-    st.cache_data.clear()
-    st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**💡 Tips:**")
-st.sidebar.markdown("- Use filters to focus on specific time periods or categories")
-st.sidebar.markdown("- Check different tabs for various analytics views")  
-st.sidebar.markdown("- Generate forecasts in the Forecast tab")
-st.sidebar.markdown("- Hover over charts for detailed information")
+    st.markdown(f'<div style="background-color: #1e2329; padding: 1rem; border-radius: 8px; border: 1px solid #404040;"><strong style="color: #ffffff;">⏰ Last Updated:</strong> <span style="color: #ffffff;">Just Now</span></div>', unsafe_allow_html=True)
