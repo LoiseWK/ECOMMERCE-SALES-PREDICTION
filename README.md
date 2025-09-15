@@ -2,7 +2,7 @@
 
 ![alt text](1_b4_2bCCwcmLtu-3tWN50IQ.jpg)
 
- Live App → http://10.254.0.91:8501
+ Live App → https://loisewk-ecommerce-sales-prediction-streamlit-app-mk3ek8.streamlit.app/
 
 ## 1. Business Understanding
 Accurately forecast daily unit-sales for the next 90 days so that product managers and supply-chain teams can:
